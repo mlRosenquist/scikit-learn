@@ -6,7 +6,7 @@ import numbers
 import numpy as np
 from scipy.sparse import issparse
 from warnings import warn
-
+import pandas as pd
 from ..tree import ExtraTreeRegressor
 from ..utils import (
     check_random_state,
@@ -202,7 +202,7 @@ class IsolationForest(OutlierMixin, BaseBagging):
         n_jobs=None,
         random_state=None,
         verbose=0,
-        warm_start=False,
+        warm_start=False
     ):
         super().__init__(
             base_estimator=ExtraTreeRegressor(
@@ -219,7 +219,9 @@ class IsolationForest(OutlierMixin, BaseBagging):
             random_state=random_state,
             verbose=verbose,
         )
-
+        self.df_unique_ = pd.DataFrame()
+        self.df_results_ = pd.DataFrame()
+        self.n_samples_ = 0
         self.contamination = contamination
 
     def _set_oob_score(self, X, y):
@@ -259,6 +261,10 @@ class IsolationForest(OutlierMixin, BaseBagging):
             # Pre-sort indices to avoid that each individual tree of the
             # ensemble sorts the indices.
             X.sort_indices()
+
+
+
+        ## OLD STUFF
 
         rnd = check_random_state(self.random_state)
         y = rnd.uniform(size=X.shape[0])
@@ -304,18 +310,30 @@ class IsolationForest(OutlierMixin, BaseBagging):
         self.max_samples_ = max_samples
         max_depth = int(np.ceil(np.log2(max(max_samples, 2))))
         super()._fit(
-            X,
-            y,
-            max_samples,
-            max_depth=max_depth,
-            sample_weight=sample_weight,
-            check_input=False,
+            X, y, max_samples, max_depth=max_depth, sample_weight=sample_weight
         )
 
         if self.contamination == "auto":
             # 0.5 plays a special role as described in the original paper.
             # we take the opposite as we consider the opposite of their score.
             self.offset_ = -0.5
+
+            # ADDED STUFF HERE
+            new_array = [tuple(row) for row in X]
+            unique, idx, counts = np.unique(new_array, axis=0, return_index=True, return_counts=True)
+            n_samples = len(X)
+            n_uniques = len(unique)
+
+            self.df_unique_['X'] = unique[:, 0]
+            self.df_unique_['Y'] = unique[:, 1]
+            self.df_unique_['counts'] = counts
+            self.df_unique_['idx'] = idx
+            self.df_unique_['score'] = self.score_samples(unique) - self.offset_
+            self.df_unique_['score_converted'] = -(self.df_unique_.score + self.offset_)
+
+            self.df_unique_['new_score_converted'] = 2 ** - ((-(np.log2(self.df_unique_.score_converted) * self.c(n_samples)) + np.log2(self.df_unique_.counts))/self.c(n_samples))
+            self.df_unique_['new_score'] = - self.df_unique_.new_score_converted - self.offset_
+
             return self
 
         # else, define offset_ wrt contamination parameter
@@ -345,6 +363,35 @@ class IsolationForest(OutlierMixin, BaseBagging):
         is_inlier = np.ones_like(decision_func, dtype=int)
         is_inlier[decision_func < 0] = -1
         return is_inlier
+
+    def predict_extended(self, X):
+        """
+        Predict if a particular sample is an outlier or not.
+
+        Parameters
+        ----------
+        X : {array-like, sparse matrix} of shape (n_samples, n_features)
+            The input samples. Internally, it will be converted to
+            ``dtype=np.float32`` and if a sparse matrix is provided
+            to a sparse ``csr_matrix``.
+
+        Returns
+        -------
+        is_inlier : ndarray of shape (n_samples,)
+            For each observation, tells whether or not (+1 or -1) it should
+            be considered as an inlier according to the fitted model.
+        """
+        check_is_fitted(self)
+        decision_func = self.decision_function_extended(X)
+        is_inlier = np.ones_like(decision_func, dtype=int)
+        is_inlier[decision_func < 0] = -1
+        return is_inlier
+
+    def H(self, i):
+        return np.log(i) + 0.5772156649  # euler's constant
+
+    def c(self, n):
+        return 2 * self.H(n - 1) - ((2 * (n - 1)) / n)
 
     def decision_function(self, X):
         """
@@ -377,6 +424,55 @@ class IsolationForest(OutlierMixin, BaseBagging):
         # an outlier:
 
         return self.score_samples(X) - self.offset_
+
+    def decision_function_extended(self, X):
+        """
+        Average anomaly score of X of the base classifiers.
+
+        The anomaly score of an input sample is computed as
+        the mean anomaly score of the trees in the forest.
+
+        The measure of normality of an observation given a tree is the depth
+        of the leaf containing this observation, which is equivalent to
+        the number of splittings required to isolate this point. In case of
+        several observations n_left in the leaf, the average path length of
+        a n_left samples isolation tree is added.
+
+        Parameters
+        ----------
+        X : {array-like, sparse matrix} of shape (n_samples, n_features)
+            The input samples. Internally, it will be converted to
+            ``dtype=np.float32`` and if a sparse matrix is provided
+            to a sparse ``csr_matrix``.
+
+        Returns
+        -------
+        scores : ndarray of shape (n_samples,)
+            The anomaly score of the input samples.
+            The lower, the more abnormal. Negative scores represent outliers,
+            positive scores represent inliers.
+        """
+        # We subtract self.offset_ to make 0 be the threshold value for being
+        # an outlier:
+
+        # ADDED STUFF HERE
+        n_samples = len(X)
+
+        df_results = pd.DataFrame()
+        df_results['X'] = X[:, 0]
+        df_results['Y'] = X[:, 1]
+        df_results['score'] = self.score_samples(X) - self.offset_
+        df_results['score_converted'] = -(df_results.score + self.offset_)
+        df_results[['counts', 'new_score_converted']] = df_results.apply(lambda row:
+             [
+                 self.df_unique_[(self.df_unique_.X == row.X) & (self.df_unique_.Y == row.Y)].iloc[0].counts,
+                 self.df_unique_[(self.df_unique_.X == row.X) & (self.df_unique_.Y == row.Y)].iloc[0].new_score_converted]
+            if ((self.df_unique_.X == row.X) & (self.df_unique_.Y == row.Y)).any()
+            else [0, row.score_converted], axis=1, result_type='expand')
+
+        df_results['new_score'] = - df_results.new_score_converted - self.offset_
+
+        return df_results.new_score.to_numpy()
 
     def score_samples(self, X):
         """
