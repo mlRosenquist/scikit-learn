@@ -220,6 +220,7 @@ class IsolationForest(OutlierMixin, BaseBagging):
             verbose=verbose,
         )
         self.df_unique_ = pd.DataFrame()
+        self.dimension_ = 0
         self.df_results_ = pd.DataFrame()
         self.n_samples_ = 0
         self.contamination = contamination
@@ -415,8 +416,9 @@ class IsolationForest(OutlierMixin, BaseBagging):
             n_samples = len(X)
             n_uniques = len(unique)
 
-            self.df_unique_['X'] = unique[:, 0]
-            self.df_unique_['Y'] = unique[:, 1]
+            self.df_unique_ = self.df_unique_.append(pd.DataFrame(unique), ignore_index=True)
+            self.dimension_ = len(self.df_unique_.columns)
+
             self.df_unique_['counts'] = counts
             self.df_unique_['idx'] = idx
             self.df_unique_['score'] = self.score_samples(unique) - self.offset_
@@ -550,20 +552,26 @@ class IsolationForest(OutlierMixin, BaseBagging):
         n_samples = len(X)
 
         df_results = pd.DataFrame()
-        df_results['X'] = X[:, 0]
-        df_results['Y'] = X[:, 1]
+        df_results = df_results.append(pd.DataFrame(X), ignore_index=True)
         df_results['score'] = self.score_samples(X) - self.offset_
         df_results['score_converted'] = -(df_results.score + self.offset_)
-        df_results[['counts', 'new_score_converted']] = df_results.apply(lambda row:
-             [
-                 self.df_unique_[(self.df_unique_.X == row.X) & (self.df_unique_.Y == row.Y)].iloc[0].counts,
-                 self.df_unique_[(self.df_unique_.X == row.X) & (self.df_unique_.Y == row.Y)].iloc[0].new_score_converted]
-            if ((self.df_unique_.X == row.X) & (self.df_unique_.Y == row.Y)).any()
-            else [0, row.score_converted], axis=1, result_type='expand')
+
+        df_results[['counts', 'new_score_converted']] = df_results.apply(lambda row: self.foo_bar(row), axis=1, result_type='expand')
 
         df_results['new_score'] = - df_results.new_score_converted - self.offset_
 
         return df_results.new_score.to_numpy()
+
+    def foo_bar(self, row):
+        data = row[:self.dimension_].to_dict()
+        query = ' & '.join([f'@self.df_unique_[{k}]=={v}' for k, v in data.items()])
+        unique = self.df_unique_.query(query)
+
+        if(len(unique) > 0):
+            unique = unique.iloc[0]
+            return [unique.counts, unique.new_score_converted]
+        else:
+            return [0, row.score_converted]
 
     def score_samples(self, X):
         """
