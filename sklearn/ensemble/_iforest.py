@@ -545,8 +545,6 @@ class IsolationForest(OutlierMixin, BaseBagging):
             The lower, the more abnormal. Negative scores represent outliers,
             positive scores represent inliers.
         """
-        # We subtract self.offset_ to make 0 be the threshold value for being
-        # an outlier:
 
         # ADDED STUFF HERE
         n_samples = len(X)
@@ -555,12 +553,22 @@ class IsolationForest(OutlierMixin, BaseBagging):
         df_results = df_results.append(pd.DataFrame(X), ignore_index=True)
         df_results['score'] = self.score_samples(X) - self.offset_
         df_results['score_converted'] = -(df_results.score + self.offset_)
+        #row_queries = list(map(self.get_row_query, X))
+        #query = ' | '.join(row_queries)
+        #uniques = self.df_unique_.query(query)
 
-        df_results[['counts', 'new_score_converted']] = df_results.apply(lambda row: self.foo_bar(row), axis=1, result_type='expand')
+        from pandarallel import pandarallel
+        pandarallel.initialize()
+        df_results[['counts', 'new_score_converted']] = df_results.parallel_apply(lambda row: self.foo_bar(row), axis=1, result_type='expand')
 
         df_results['new_score'] = - df_results.new_score_converted - self.offset_
 
         return df_results.new_score.to_numpy()
+
+    def get_row_query(self, item):
+        query = '('
+        query += ' & '.join([f'@self.df_unique_[{k}]=={v}' for k, v in enumerate(item)])
+        return query +')'
 
     def foo_bar(self, row):
         data = row[:self.dimension_].to_dict()
