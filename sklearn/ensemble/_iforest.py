@@ -554,12 +554,12 @@ class IsolationForest(OutlierMixin, BaseBagging):
         X = np.append(X, -(X[:, np.shape(X)[1]-1]+self.offset_)[:, None], axis=1)
 
         # Find points seen in training phase
-        A = self.df_unique_[:, :self.dimension_]
+        A = self.df_unique_[:, :self.dimension_].astype(int)
         B = X[:, :self.dimension_].astype(int)
         nrows, ncols = A.shape
         dtype = {'names': ['f{}'.format(i) for i in range(ncols)],
                  'formats': ncols * [A.dtype]}
-
+        old_X = X
         mask = np.in1d(B.view(dtype), A.view(dtype))
         if(not np.all(mask == False)):
             X[mask][:, np.shape(X)[1]-1] = np.apply_along_axis(self.get_new_score, 1, X[mask])
@@ -577,17 +577,19 @@ class IsolationForest(OutlierMixin, BaseBagging):
         #df_results[['counts', 'new_score_converted']] = df_results.parallel_apply(lambda row: self.foo_bar(row), axis=1, result_type='expand')
 
         #df_results['new_score'] = - df_results.new_score_converted - self.offset_
-
-        return X[:, np.shape(X)[1] - 2]
+        final_score = X[:, np.shape(X)[1] - 2]
+        return final_score
 
     def get_new_score(self, item):
         # Get Row
         index = np.flatnonzero((self.df_unique_[:, :self.dimension_] ==
-                                item[:self.dimension_].T.astype(int)).all(1))[0]
+                                item[:self.dimension_].T.astype(int)).all(1))
 
         # Return original score if it doesnt exist
+        if (index.size <= 0):
+            return item[self.dimension_+1]
 
-        row = self.df_unique_[index, :]
+        row = self.df_unique_[index[0], :]
         return 2 ** - ((-(np.log2(item[self.dimension_+1]) * self.c(self.n_samples_)) + np.log2(
             row[self.dimension_])) / self.c(self.n_samples_))
 
