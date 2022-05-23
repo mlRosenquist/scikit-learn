@@ -413,19 +413,20 @@ class IsolationForest(OutlierMixin, BaseBagging):
             # ADDED STUFF HERE
             new_array = [tuple(row) for row in X]
             unique, idx, counts = np.unique(new_array, axis=0, return_index=True, return_counts=True)
-            n_samples = len(X)
+            self.n_samples_ = len(X)
             n_uniques = len(unique)
 
             self.df_unique_ = self.df_unique_.append(pd.DataFrame(unique), ignore_index=True)
             self.dimension_ = len(self.df_unique_.columns)
 
             self.df_unique_['counts'] = counts
-            self.df_unique_['idx'] = idx
-            self.df_unique_['score'] = self.score_samples(unique) - self.offset_
-            self.df_unique_['score_converted'] = -(self.df_unique_.score + self.offset_)
+            self.df_unique_ = self.df_unique_.to_numpy()
+            #self.df_unique_['idx'] = idx
+            #self.df_unique_['score'] = self.score_samples(unique) - self.offset_
+            #self.df_unique_['score_converted'] = -(self.df_unique_.score + self.offset_)
 
-            self.df_unique_['new_score_converted'] = 2 ** - ((-(np.log2(self.df_unique_.score_converted) * self.c(n_samples)) + np.log2(self.df_unique_.counts))/self.c(n_samples))
-            self.df_unique_['new_score'] = - self.df_unique_.new_score_converted - self.offset_
+            #self.df_unique_['new_score_converted'] = 2 ** - ((-(np.log2(self.df_unique_.score_converted) * self.c(n_samples)) + np.log2(self.df_unique_.counts))/self.c(n_samples))
+            #self.df_unique_['new_score'] = - self.df_unique_.new_score_converted - self.offset_
 
             return self
 
@@ -545,25 +546,50 @@ class IsolationForest(OutlierMixin, BaseBagging):
             The lower, the more abnormal. Negative scores represent outliers,
             positive scores represent inliers.
         """
+        X = X.astype(int)
 
-        # ADDED STUFF HERE
-        n_samples = len(X)
+        # Add score and covnerted score
+        score = self.score_samples(X) - self.offset_
+        X = np.append(X, score[:, None], axis=1)
+        X = np.append(X, -(X[:, np.shape(X)[1]-1]+self.offset_)[:, None], axis=1)
 
-        df_results = pd.DataFrame()
-        df_results = df_results.append(pd.DataFrame(X), ignore_index=True)
-        df_results['score'] = self.score_samples(X) - self.offset_
-        df_results['score_converted'] = -(df_results.score + self.offset_)
+        # Find points seen in training phase
+        A = self.df_unique_[:, :self.dimension_]
+        B = X[:, :self.dimension_].astype(int)
+        nrows, ncols = A.shape
+        dtype = {'names': ['f{}'.format(i) for i in range(ncols)],
+                 'formats': ncols * [A.dtype]}
+
+        mask = np.in1d(B.view(dtype), A.view(dtype))
+        if(not np.all(mask == False)):
+            X[mask][:, np.shape(X)[1]-1] = np.apply_along_axis(self.get_new_score, 1, X[mask])
+            X[mask][:, np.shape(X)[1] - 2] = - X[mask][:, np.shape(X)[1] - 1] - self.offset_
+
+        #df_results = pd.DataFrame()
+        #df_results = df_results.append(pd.DataFrame(X), ignore_index=True)
+        #df_results['score'] = self.score_samples(X) - self.offset_
+        #df_results['score_converted'] = -(df_results.score + self.offset_)
         #row_queries = list(map(self.get_row_query, X))
         #query = ' | '.join(row_queries)
         #uniques = self.df_unique_.query(query)
 
-        from pandarallel import pandarallel
-        pandarallel.initialize()
-        df_results[['counts', 'new_score_converted']] = df_results.parallel_apply(lambda row: self.foo_bar(row), axis=1, result_type='expand')
 
-        df_results['new_score'] = - df_results.new_score_converted - self.offset_
+        #df_results[['counts', 'new_score_converted']] = df_results.parallel_apply(lambda row: self.foo_bar(row), axis=1, result_type='expand')
 
-        return df_results.new_score.to_numpy()
+        #df_results['new_score'] = - df_results.new_score_converted - self.offset_
+
+        return X[:, np.shape(X)[1] - 2]
+
+    def get_new_score(self, item):
+        # Get Row
+        index = np.flatnonzero((self.df_unique_[:, :self.dimension_] ==
+                                item[:self.dimension_].T.astype(int)).all(1))[0]
+
+        # Return original score if it doesnt exist
+
+        row = self.df_unique_[index, :]
+        return 2 ** - ((-(np.log2(item[self.dimension_+1]) * self.c(self.n_samples_)) + np.log2(
+            row[self.dimension_])) / self.c(self.n_samples_))
 
     def get_row_query(self, item):
         query = '('
