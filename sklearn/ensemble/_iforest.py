@@ -516,8 +516,9 @@ class IsolationForest(OutlierMixin, BaseBagging):
         """
         # We subtract self.offset_ to make 0 be the threshold value for being
         # an outlier:
-
-        return self.score_samples(X) - self.offset_
+        score =  self.score_samples(X) - self.offset_
+        X = np.append(X, score[:, None], axis=1)
+        return  score
 
     def decision_function_extended(self, X):
         """
@@ -546,38 +547,34 @@ class IsolationForest(OutlierMixin, BaseBagging):
             The lower, the more abnormal. Negative scores represent outliers,
             positive scores represent inliers.
         """
-        X = X.astype(int)
+
 
         # Add score and covnerted score
         score = self.score_samples(X) - self.offset_
+        X = X.astype(int)
         X = np.append(X, score[:, None], axis=1)
         X = np.append(X, -(X[:, np.shape(X)[1]-1]+self.offset_)[:, None], axis=1)
 
         # Find points seen in training phase
         A = self.df_unique_[:, :self.dimension_].astype(int)
+        #if len(A) % 2 == 1:
+         #   A = A[0:-1, :]
+
         B = X[:, :self.dimension_].astype(int)
-        nrows, ncols = A.shape
-        dtype = {'names': ['f{}'.format(i) for i in range(ncols)],
-                 'formats': ncols * [A.dtype]}
-        old_X = X
-        mask = np.in1d(B.view(dtype), A.view(dtype))
+        #nrows, ncols = A.shape
+        #dtype = {'names': ['f{}'.format(i) for i in range(ncols)],
+                 #'formats': ncols * [A.dtype]}
+        #mask = np.in1d(B.view(dtype), A.view(dtype))
+        mask  = (B[None,:] == A[:,None]).all(-1).any(0)
+
         if(not np.all(mask == False)):
-            X[mask][:, np.shape(X)[1]-1] = np.apply_along_axis(self.get_new_score, 1, X[mask])
-            X[mask][:, np.shape(X)[1] - 2] = - X[mask][:, np.shape(X)[1] - 1] - self.offset_
+            final_score_converted = np.apply_along_axis(self.get_new_score, 1, X[mask])
+            final_score = - final_score_converted - self.offset_
 
-        #df_results = pd.DataFrame()
-        #df_results = df_results.append(pd.DataFrame(X), ignore_index=True)
-        #df_results['score'] = self.score_samples(X) - self.offset_
-        #df_results['score_converted'] = -(df_results.score + self.offset_)
-        #row_queries = list(map(self.get_row_query, X))
-        #query = ' | '.join(row_queries)
-        #uniques = self.df_unique_.query(query)
+            idx = np.arange(X.size).reshape(X.shape)
+            X.flat[idx[mask][:, self.dimension_]] = final_score
 
-
-        #df_results[['counts', 'new_score_converted']] = df_results.parallel_apply(lambda row: self.foo_bar(row), axis=1, result_type='expand')
-
-        #df_results['new_score'] = - df_results.new_score_converted - self.offset_
-        final_score = X[:, np.shape(X)[1] - 2]
+        final_score = X[:, self.dimension_]
         return final_score
 
     def get_new_score(self, item):
@@ -590,8 +587,13 @@ class IsolationForest(OutlierMixin, BaseBagging):
             return item[self.dimension_+1]
 
         row = self.df_unique_[index[0], :]
-        return 2 ** - ((-(np.log2(item[self.dimension_+1]) * self.c(self.n_samples_)) + np.log2(
-            row[self.dimension_])) / self.c(self.n_samples_))
+        count = row[self.dimension_]
+        score_converted = item[self.dimension_+1]
+
+        numerator = -(np.log2(score_converted) * self.c(self.n_samples_)) + np.log2(
+            count)
+        denominator = self.c(self.n_samples_)
+        return 2 ** - (numerator / denominator)
 
     def get_row_query(self, item):
         query = '('
